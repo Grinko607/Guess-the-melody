@@ -399,6 +399,13 @@ def play_song(res, chosen_category, chosen_difficulty, session_id_db):
     melodies = audio_files[chosen_category][chosen_difficulty]
     random_audio = random.choice(list(melodies.items()))
 
+    # Получаем все названия треков для создания вариантов ответов
+    all_tracks = list(melodies.values())
+    # Добавляем правильный ответ в варианты
+    options = random.sample(all_tracks, min(3, len(all_tracks) - 1))  # Случайные треки
+    options.append(random_audio[1])  # Добавляем правильный ответ
+    random.shuffle(options)  # Перемешиваем варианты
+
     sessionStorage[session_id_db] = {
         'current_audio': random_audio[0],
         'correct_answer': random_audio[1],
@@ -408,6 +415,7 @@ def play_song(res, chosen_category, chosen_difficulty, session_id_db):
 
     res['response']['text'] = "Сможешь угадать мелодию?"
     res['response']['tts'] = "Сможешь угадать мелодию?"
+    res['response']['options'] = options  # Добавляем варианты ответов
     res['response'][
         'tts'] = f"<speaker audio='dialogs-upload/9b3b45b5-d31c-406f-bdf2-db6c8d2e30d3/{random_audio[0]}.opus'>"
     return res
@@ -418,53 +426,22 @@ def answer_handler(res, event, session_id_db):
         res['response']['text'] = 'Ошибка'
         return res
 
-    user_answer = ' '.join(event['request']['nlu']['tokens'])
+    user_answer = event['request']['original_utterance']  # Получаем ответ пользователя
     current_data = sessionStorage[session_id_db]
 
-    if user_answer.lower() == current_data['correct_answer'].lower():
-        score_increment = 0
-        if current_data['difficulty'] == 'Лёгкий':
-            score_increment = 1
-        elif current_data['difficulty'] == 'Средний':
-            score_increment = 2
-        elif current_data['difficulty'] == 'Сложный':
-            score_increment = 3
-        update_user_score(session_id_db, score_increment)
+    if user_answer in current_data['options']:  # Проверяем, есть ли ответ в вариантах
+        if user_answer.lower() == current_data['correct_answer'].lower():
+            score_increment = 0
+            if current_data['difficulty'] == 'Лёгкий':
+                score_increment = 1
+            elif current_data['difficulty'] == 'Средний':
+                score_increment = 2
+            elif current_data['difficulty'] == 'Сложный':
+                score_increment = 3
+            update_user_score(session_id_db, score_increment)
 
-        res['response']['text'] = "Молодец! Ты угадал мелодию. Продолжим?"
-        res['response']['tts'] = "Молодец! Ты угадал мелодию. Продолжим?"
-        res['response']['buttons'] = [
-            {
-                'title': 'Да',
-                'payload': {
-                    'next_event': [
-                        {
-                            'chapter': 'game',
-                            'event': 'start_game'
-                        }
-                    ]
-                },
-                'hide': True
-            },
-            {
-                'title': 'Нет',
-                'payload': {
-                    'next_event': [
-                        {
-                            'chapter': 'game',
-                            'event': 'end_game'
-                        }
-                    ]
-                },
-                'hide': True
-            }
-        ]
-        return res
-    else:
-        current_data['attempts'] += 1
-        if current_data['attempts'] >= current_data['max_attempts']:
-            res['response']['text'] = f"Правильный ответ: {current_data['correct_answer']}. Продолжим?"
-            res['response']['tts'] = f"Правильный ответ: {current_data['correct_answer']}. Продолжим?"
+            res['response']['text'] = "Молодец! Ты угадал мелодию. Продолжим?"
+            res['response']['tts'] = "Молодец! Ты угадал мелодию. Продолжим?"
             res['response']['buttons'] = [
                 {
                     'title': 'Да',
@@ -493,9 +470,44 @@ def answer_handler(res, event, session_id_db):
             ]
             return res
         else:
-            res['response']['text'] = "Попробуй снова."
-            res['response']['tts'] = "Попробуй снова."
-            return res
+            current_data['attempts'] += 1
+            if current_data['attempts'] >= current_data['max_attempts']:
+                res['response']['text'] = f"Правильный ответ: {current_data['correct_answer']}. Продолжим?"
+                res['response']['tts'] = f"Правильный ответ: {current_data['correct_answer']}. Продолжим?"
+                res['response']['buttons'] = [
+                    {
+                        'title': 'Да',
+                        'payload': {
+                            'next_event': [
+                                {
+                                    'chapter': 'game',
+                                    'event': 'start_game'
+                                }
+                            ]
+                        },
+                        'hide': True
+                    },
+                    {
+                        'title': 'Нет',
+                        'payload': {
+                            'next_event': [
+                                {
+                                    'chapter': 'game',
+                                    'event': 'end_game'
+                                }
+                            ]
+                        },
+                        'hide': True
+                    }
+                ]
+            else:
+                res['response']['text'] = "Неправильно. Попробуй еще раз."
+                res['response']['tts'] = "Неправильно. Попробуй еще раз."
+    else:
+        res['response']['text'] = "Пожалуйста, выбери один из предложенных вариантов."
+        res['response']['tts'] = "Пожалуйста, выбери один из предложенных вариантов."
+
+    return res
 
 
 def update_user_score(session_id_db, score_increment):
