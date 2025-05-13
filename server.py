@@ -240,7 +240,9 @@ def dialog_handler():
 
 
 def button_handler(res, event, session_id_db):
+    global game_state
     if game_state == 'waiting_for_feedback':
+        game_state == None
         return leave_feedback_handler(res, event, session_id_db)
     elif event['request']['payload']['next_event'][0]['event'] == 'start_game':
         return start_game_handler(res)
@@ -554,7 +556,6 @@ def end_game_handler(res, session_id_db):
             'hide': True
         }
     ]
-    game_state = 'waiting_for_feedback'
     return res
 
 
@@ -574,29 +575,18 @@ def save_feedback_to_db(session_id_db, comment):
 
 def leave_feedback_handler(res, event, session_id_db):
     global game_state
-    print("kk")
     if 'original_utterance' in event['request']:
         user_feedback = event['request']['original_utterance']  # Получаем отзыв из запроса
         save_feedback_to_db(session_id_db, user_feedback)  # Сохраняем отзыв в БД
         res['response']['text'] = "Спасибо за Ваш отзыв!"
         res['response']['tts'] = "Спасибо за Ваш отзыв!"
-        res['response']['end_session'] = True
         game_state = None
+        res['response']['end_session'] = True
     else:
         res['response']['text'] = "Пожалуйста, напишите Ваш отзыв."
         res['response']['tts'] = "Пожалуйста, напишите Ваш отзыв."
         res['response']['end_session'] = False
         game_state = 'waiting_for_feedback'
-    return res
-
-
-def two(res, event, session_id_db):
-    if 'original_utterance' in event['request']:
-        user_feedback = event['request']['original_utterance']  # Получаем отзыв из запроса
-        save_feedback_to_db(session_id_db, user_feedback)  # Сохраняем отзыв в БД
-        res['response']['text'] = "Спасибо за Ваш отзыв!"
-        res['response']['tts'] = "Спасибо за Ваш отзыв!"
-        res['response']['end_session'] = True
     return res
 
 
@@ -644,5 +634,3 @@ def view_feedback_handler(res):
 
 if __name__ == '__main__':
     app.run()
-
-
