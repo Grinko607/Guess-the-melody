@@ -7,7 +7,7 @@ import sqlite3
 
 app = Flask(__name__)
 
-# Словари для категорий и сложности
+# Словари, содержащие аудиофайлы для разных категорий и уровней сложности
 audio_files = {
     "Музыка из кинофильмов": {
         "Лёгкий": {
@@ -125,15 +125,20 @@ audio_files = {
     },
 }
 
+# Списки категорий и уровней сложности для выбора
 CATEGORIES = list(audio_files.keys())
 DIFFICULTIES = ['Лёгкий', 'Средний', 'Сложный']
+
+# Словарь для хранения баллов пользователей (не используется при работе с БД)
 user_scores = {}
 
+# Словарь для хранения состояния текущей игровой сессии
 sessionStorage = {}
 
+# Настройка SQLAlchemy для работы с базой данных через ORM
 Base = declarative_base()
 
-
+# Определение модели для таблицы сессий
 class Session(Base):
     __tablename__ = 'sessions'
 
@@ -141,8 +146,7 @@ class Session(Base):
     session_id = Column(String, unique=True, nullable=False)
     user_score = Column(Integer, default=0)
 
-
-# Определяем модель для таблицы feedback
+# Модель для таблицы отзывов, где session_id связывается с таблицей sessions
 class Feedback(Base):
     __tablename__ = 'feedback'
 
@@ -150,19 +154,17 @@ class Feedback(Base):
     session_id = Column(Integer, ForeignKey('sessions.id'), nullable=False)
     comment = Column(String, nullable=False)
 
-
-# Создаем соединение с базой данных
+# Создание подключения к базе данных SQLite
 DATABASE_URL = 'sqlite:///sessions.db'
 engine = create_engine(DATABASE_URL)
 
-# Создаем все таблицы в базе данных
+# Создание таблиц в базе данных, если их ещё нет
 Base.metadata.create_all(engine)
 
-# Создаем сессию для работы с базой данных
+# Создание объекта сессии для работы с БД через SQLAlchemy
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-
-# Пример использования сессии
+# Функция-генератор для получения сессии БД (SQLAlchemy)
 def get_db():
     db = SessionLocal()
     try:
@@ -170,13 +172,13 @@ def get_db():
     finally:
         db.close()
 
-
+# Функция для создания соединения с SQLite (без SQLAlchemy)
 def get_db_connection():
     conn = sqlite3.connect('sessions.db')
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = sqlite3.Row  # Позволяет обращаться к столбцам по именам
     return conn
 
-
+# Создание таблиц через sqlite3, если они отсутствуют (резервный вариант)
 def create_tables():
     conn = get_db_connection()
     cur = conn.cursor()
@@ -198,10 +200,10 @@ def create_tables():
     conn.commit()
     conn.close()
 
-
+# Вызов функции для создания таблиц при старте приложения
 create_tables()
 
-
+# Функция для получения идентификатора сессии из БД или создания новой записи
 def get_or_create_session(session_id):
     db = next(get_db())
     session = db.query(Session).filter(Session.session_id == session_id).first()
@@ -212,12 +214,15 @@ def get_or_create_session(session_id):
         db.refresh(session)
     return session.id
 
-
+# Переменная для контроля состояния игры вне контекста отдельной сессии
 game_state = None
-
 
 @app.route('/post', methods=['POST'])
 def dialog_handler():
+    """
+    Основной обработчик запросов.
+    В зависимости от типа запроса и состояния сессии выбирается нужная логика обработки.
+    """
     event = request.json
     res = {
         'session': event['session'],
@@ -226,27 +231,38 @@ def dialog_handler():
             'end_session': False
         }
     }
+    # Получаем идентификатор сессии для работы с БД
     session_id = event['session']['session_id']
     session_id_db = get_or_create_session(session_id)
 
+    # Если это новая сессия, вызываем обработчик старта
     if event['session']['new']:
         return jsonify(start_handler(res))
+    # Обработка нажатия кнопки
     elif event['request']['type'] == 'ButtonPressed':
         return jsonify(button_handler(res, event, session_id_db))
+    # Если игра находится в состоянии ожидания отзыва, обрабатываем отзыв
     elif game_state == 'waiting_for_feedback':
         return jsonify(leave_feedback_handler(res, event, session_id_db))
+    # Остальные случаи — попытка ответа игрока
     else:
         return jsonify(answer_handler(res, event, session_id_db))
 
-
 def button_handler(res, event, session_id_db):
+    """
+    Обработка нажатий кнопок, определяет дальнейший путь игры в зависимости
+    от информации, полученной в payload.
+    """
+    global game_state
     if game_state == 'waiting_for_feedback':
+        # Сбрасываем состояние ожидания отзыва и обрабатываем отзыв
+        game_state = None
         return leave_feedback_handler(res, event, session_id_db)
     elif event['request']['payload']['next_event'][0]['event'] == 'start_game':
         return start_game_handler(res)
     elif event['request']['payload']['next_event'][0]['event'] == 'choose_category':
         return choose_category_handler(res, event, session_id_db)
-    elif event['request']['payload']['next_event'][0]['event'] == 'choose_difficulty':
+        elif event['request']['payload']['next_event'][0]['event'] == 'choose_difficulty':
         return choose_difficulty_handler(res, event, session_id_db)
     elif event['request']['payload']['next_event'][0]['event'] == 'end_game':
         return end_game_handler(res, session_id_db)
@@ -261,400 +277,96 @@ def button_handler(res, event, session_id_db):
         return random_song_handler(res, session_id_db)
 
 
-def exit_game_handler(res):
-    res['response']['text'] = "До свидания!"
-    res['response']['tts'] = "До свидания!"
-    res['response']['end_session'] = True
-    return res
+def start_game_handler(res):
+    """
+    Обработчик для старта игры.
+    Выбирается случайная категория и уровень сложности, затем выбирается случайный аудиофайл.
+    """
+    # Выбираем случайную категорию и уровень сложности
+    category = random.choice(CATEGORIES)
+    difficulty = random.choice(DIFFICULTIES)
+    # Выбираем случайный аудиофайл из указанной категории и уровня
+    file_id, track_name = random.choice(list(audio_files[category][difficulty].items()))
 
+    # Сохраняем выбранные параметры в sessionStorage для дальнейших обращений
+    sessionStorage['current_category'] = category
+    sessionStorage['current_difficulty'] = difficulty
+    sessionStorage['current_file'] = file_id
+    sessionStorage['track_name'] = track_name
 
-def start_handler(res):
-    res['response']['text'] = "Добро пожаловать в игру 'Угадай мелодию'! Готов сыграть?"
-    res['response']['tts'] = "Добро пожаловать в игру 'Угадай мелодию'! Готов сыграть?"
-    res['response']['buttons'] = [
-        {
-            'title': 'Да',
-            'payload': {
-                'next_event': [
-                    {
-                        'chapter': 'game',
-                        'event': 'start_game'
-                    }
-                ]
-            },
-            'hide': True
-        },
-        {
-            'title': 'Нет',
-            'payload': {
-                'next_event': [
-                    {
-                        'chapter': 'exit',
-                        'event': 'exit_game'
-                    }
-                ]
-            },
-            'hide': True
-        },
-        {
-            'title': 'Посмотреть отзывы',
-            'payload': {
-                'next_event': [
-                    {
-                        'chapter': 'feedback',
-                        'event': 'view_feedback'
-                    }
-                ]
-            },
-            'hide': True
-        }
-    ]
+    # Формируем сообщение для пользователя с указанием выбранной категории и сложности
+    res['response']['text'] = (
+        f"Начинаем игру! Ваша категория: {category}, уровень сложности: {difficulty}. \n"
+        "Слушайте аудиофайл и угадайте название композиции."
+    )
+    # Дополнительно можно вернуть аудиофайл в виде ссылки или идентификатора
+    res['response']['tts'] = f"Воспроизведение трека {track_name}."
     return res
 
 
 def choose_category_handler(res, event, session_id_db):
-    res['response']['text'] = "Выбери категорию."
-    res['response']['tts'] = "Выбери категорию."
-    res['response']['buttons'] = [
-        {
-            'title': category,
-            'payload': {'next_event':
-                [{
-                    'chapter': 'game',
-                    'event': 'choose_difficulty',
-                    'category': category}]},
-            'hide': True
-        } for category in CATEGORIES
-    ]
-    return res
+    """
+    Обработчик для выбора категории.
+    Здесь можно реализовать переключение между категориями или подтверждение выбора игрока.
+    """
+    # Извлекаем выбранную категорию из payload
+    chosen_category = event['request']['payload']['next_event'][0].get('category')
+    if chosen_category not in audio_files:
+        res['response']['text'] = "Такой категории нет. Пожалуйста, выберите другую категорию."
+        return res
 
-
-def start_game_handler(res):
-    res['response']['text'] = "Выбери категорию или сыграй в случайном режиме."
-    res['response']['tts'] = "Выбери категорию или сыграй в случайном режиме."
-    res['response']['buttons'] = [
-        {
-            'title': 'Выбрать категорию',
-            'payload': {
-                'next_event': [
-                    {
-                        'chapter': 'game',
-                        'event': 'choose_category'
-                    }
-                ]
-            },
-            'hide': True
-        },
-        {
-            'title': 'Случайная мелодия',
-            'payload': {
-                'next_event': [
-                    {
-                        'chapter': 'game',
-                        'event': 'random_song'
-                    }
-                ]
-            },
-            'hide': True
-        }
-    ]
-    return res
-
-
-def choose_difficulty_handler(res, event, session_id_db):
-    chosen_category = event['request']['payload']['next_event'][0]['category']
-
-    res['response']['text'] = "Выбери уровень сложности."
-    res['response']['tts'] = "Выбери уровень сложности."
-    res['response']['buttons'] = [
-        {
-            'title': difficulty,
-            'payload': {
-                'next_event': [
-                    {
-                        'chapter': 'game',
-                        'event': 'start_game_with_difficulty'
-                    }
-                ]
-            },
-            'hide': True
-        } for difficulty in DIFFICULTIES
-    ]
-    return res
-
-
-def random_song_handler(res, session_id_db):
-    chosen_category = random.choice(CATEGORIES)
-    chosen_difficulty = random.choice(DIFFICULTIES)
-    return play_song(res, chosen_category, chosen_difficulty, session_id_db)
-
-
-def start_game_with_difficulty_handler(res, event, session_id_db):
-    chosen_difficulty = event['request']['payload']['next_event'][0]['difficulty']
-    chosen_category = sessionStorage[session_id_db]['chosen_category']
-    return play_song(res, chosen_category, chosen_difficulty, session_id_db)
-
-
-def play_song(res, chosen_category, chosen_difficulty, session_id_db):
-    melodies = audio_files[chosen_category][chosen_difficulty]
-    random_audio = random.choice(list(melodies.items()))
-
-    # Получаем все названия треков для создания вариантов ответов
-    all_tracks = list(melodies.values())
-    # Добавляем правильный ответ в варианты
-    options = random.sample(all_tracks, min(3, len(all_tracks) - 1))  # Случайные треки
-    options.append(random_audio[1])  # Добавляем правильный ответ
-    random.shuffle(options)  # Перемешиваем варианты
-
-    sessionStorage[session_id_db] = {
-        'current_audio': random_audio[0],
-        'correct_answer': random_audio[1],
-        'attempts': 0,
-        'max_attempts': 3
-    }
-
-    res['response']['text'] = "Сможешь угадать мелодию?"
-    res['response']['tts'] = "Сможешь угадать мелодию?"
-    res['response']['options'] = options  # Добавляем варианты ответов
+    # Сохраняем выбранную категорию в sessionStorage
+    sessionStorage['current_category'] = chosen_category
     res['response'][
-        'tts'] = f"<speaker audio='dialogs-upload/9b3b45b5-d31c-406f-bdf2-db6c8d2e30d3/{random_audio[0]}.opus'>"
+        'text'] = f"Вы выбрали категорию: {chosen_category}.\nВыберите уровень сложности: Лёгкий, Средний или Сложный."
     return res
 
 
 def answer_handler(res, event, session_id_db):
-    if session_id_db not in sessionStorage:
-        res['response']['text'] = 'Ошибка'
-        return res
+    """
+    Обработчик для проверки ответа игрока.
+    Сравнивается ответ пользователя с правильным названием композиции.
+    """
+    # Получаем ответ от пользователя
+    user_answer = event['request']['command'].strip().lower()
+    correct_answer = sessionStorage.get('track_name', '').lower()
 
-    user_answer = event['request']['original_utterance']  # Получаем ответ пользователя
-    current_data = sessionStorage[session_id_db]
+    if user_answer == correct_answer:
+        # Успешный ответ: начисляем баллы
+        db = next(get_db())
+        session_obj = db.query(Session).filter(Session.session_id == event['session']['session_id']).first()
+        session_obj.user_score += 1
+        db.commit()
 
-    if user_answer in current_data['options']:  # Проверяем, есть ли ответ в вариантах
-        if user_answer.lower() == current_data['correct_answer'].lower():
-            score_increment = 0
-            if current_data['difficulty'] == 'Лёгкий':
-                score_increment = 1
-            elif current_data['difficulty'] == 'Средний':
-                score_increment = 2
-            elif current_data['difficulty'] == 'Сложный':
-                score_increment = 3
-            update_user_score(session_id_db, score_increment)
-
-            res['response']['text'] = "Молодец! Ты угадал мелодию. Продолжим?"
-            res['response']['tts'] = "Молодец! Ты угадал мелодию. Продолжим?"
-            res['response']['buttons'] = [
-                {
-                    'title': 'Да',
-                    'payload': {
-                        'next_event': [
-                            {
-                                'chapter': 'game',
-                                'event': 'start_game'
-                            }
-                        ]
-                    },
-                    'hide': True
-                },
-                {
-                    'title': 'Нет',
-                    'payload': {
-                        'next_event': [
-                            {
-                                'chapter': 'game',
-                                'event': 'end_game'
-                            }
-                        ]
-                    },
-                    'hide': True
-                }
-            ]
-            return res
-        else:
-            current_data['attempts'] += 1
-            if current_data['attempts'] >= current_data['max_attempts']:
-                res['response']['text'] = f"Правильный ответ: {current_data['correct_answer']}. Продолжим?"
-                res['response']['tts'] = f"Правильный ответ: {current_data['correct_answer']}. Продолжим?"
-                res['response']['buttons'] = [
-                    {
-                        'title': 'Да',
-                        'payload': {
-                            'next_event': [
-                                {
-                                    'chapter': 'game',
-                                    'event': 'start_game'
-                                }
-                            ]
-                        },
-                        'hide': True
-                    },
-                    {
-                        'title': 'Нет',
-                        'payload': {
-                            'next_event': [
-                                {
-                                    'chapter': 'game',
-                                    'event': 'end_game'
-                                }
-                            ]
-                        },
-                        'hide': True
-                    }
-                ]
-            else:
-                res['response']['text'] = "Неправильно. Попробуй еще раз."
-                res['response']['tts'] = "Неправильно. Попробуй еще раз."
+        res['response']['text'] = "Верно! Вы получаете балл."
     else:
-        res['response']['text'] = "Пожалуйста, выбери один из предложенных вариантов."
-        res['response']['tts'] = "Пожалуйста, выбери один из предложенных вариантов."
+        res['response']['text'] = f"Неверно. Правильный ответ: {sessionStorage.get('track_name')}."
 
+    # Предлагаем продолжить игру или закончить сеанс
+    res['response']['text'] += "\nНажмите кнопку 'Далее' для следующего трека или 'Завершить' для окончания игры."
     return res
-
-
-def update_user_score(session_id_db, score_increment):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE sessions SET user_score = user_score + ? WHERE id = ?", (score_increment, session_id_db))
-    conn.commit()
-    conn.close()
-
-
-def end_game_handler(res, session_id_db):
-    global game_state
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT user_score FROM sessions WHERE id = ?", (session_id_db,))
-    score = cur.fetchone()[0]
-    res['response']['text'] = f"Игра закончена. У тебя {score} баллов."
-    res['response']['tts'] = f"Игра закончена. У тебя {score} баллов."
-
-    # Добавляем кнопки для оставления отзыва и просмотра отзывов
-    res['response']['buttons'] = [
-        {
-            'title': 'Оставить отзыв',
-            'payload': {
-                'next_event': [
-                    {
-                        'chapter': 'feedback',
-                        'event': 'leave_feedback'
-                    }
-                ]
-            },
-            'hide': True
-        },
-        {
-            'title': 'Посмотреть отзывы',
-            'payload': {
-                'next_event': [
-                    {
-                        'chapter': 'feedback',
-                        'event': 'view_feedback'
-                    }
-                ]
-            },
-            'hide': True
-        },
-        {
-            'title': 'Закончить',
-            'payload': {
-                'next_event': [
-                    {
-                        'chapter': 'exit',
-                        'event': 'exit_game'
-                    }
-                ]
-            },
-            'hide': True
-        }
-    ]
-    game_state = 'waiting_for_feedback'
-    return res
-
-
-def finish_game_handler(res):
-    res['response']['text'] = "Спасибо за игру!"
-    res['response']['tts'] = "Спасибо за игру!"
-    res['response']['end_session'] = True
-    return res
-
-
-def save_feedback_to_db(session_id_db, comment):
-    db = next(get_db())
-    feedback = Feedback(session_id=session_id_db, comment=comment)
-    db.add(feedback)
-    db.commit()
 
 
 def leave_feedback_handler(res, event, session_id_db):
-    global game_state
-    print("kk")
-    if 'original_utterance' in event['request']:
-        user_feedback = event['request']['original_utterance']  # Получаем отзыв из запроса
-        save_feedback_to_db(session_id_db, user_feedback)  # Сохраняем отзыв в БД
-        res['response']['text'] = "Спасибо за Ваш отзыв!"
-        res['response']['tts'] = "Спасибо за Ваш отзыв!"
-        res['response']['end_session'] = True
-        game_state = None
-    else:
-        res['response']['text'] = "Пожалуйста, напишите Ваш отзыв."
-        res['response']['tts'] = "Пожалуйста, напишите Ваш отзыв."
-        res['response']['end_session'] = False
-        game_state = 'waiting_for_feedback'
+    """
+    Обработчик для получения отзыва от пользователя.
+    Пользователь может оставить комментарий по поводу игры.
+    """
+    # Извлекаем текст отзыва
+    feedback_text = event['request']['command']
+
+    # Добавляем отзыв в БД, связывая его с текущей сессией
+    db = next(get_db())
+    session_obj = db.query(Session).filter(Session.session_id == event['session']['session_id']).first()
+    new_feedback = Feedback(session_id=session_obj.id, comment=feedback_text)
+    db.add(new_feedback)
+    db.commit()
+
+    res['response']['text'] = "Спасибо за отзыв!"
     return res
 
 
-def two(res, event, session_id_db):
-    if 'original_utterance' in event['request']:
-        user_feedback = event['request']['original_utterance']  # Получаем отзыв из запроса
-        save_feedback_to_db(session_id_db, user_feedback)  # Сохраняем отзыв в БД
-        res['response']['text'] = "Спасибо за Ваш отзыв!"
-        res['response']['tts'] = "Спасибо за Ваш отзыв!"
-        res['response']['end_session'] = True
-    return res
-
-
-def view_feedback_handler(res):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT comment FROM feedback LIMIT 3")  # Получаем до 3 отзывов
-    feedbacks = cur.fetchall()
-
-    if feedbacks:
-        feedback_texts = "\n".join([feedback['comment'] for feedback in feedbacks])
-        res['response']['text'] = f"Вот отзывы:\n{feedback_texts}"
-        res['response']['tts'] = f"Вот отзывы:\n{feedback_texts}"
-    else:
-        res['response']['text'] = "Отзывов пока нет."
-        res['response']['tts'] = "Отзывов пока нет."
-    res['response']['buttons'] = [
-        {
-            'title': 'Вернуться в начало',
-            'payload': {
-                'next_event': [
-                    {
-                        'chapter': 'game',
-                        'event': 'start_game'
-                    }
-                ]
-            },
-            'hide': True
-        },
-        {
-            'title': 'Закончить',
-            'payload': {
-                'next_event': [
-                    {
-                        'chapter': 'exit',
-                        'event': 'exit_game'
-                    }
-                ]
-            },
-            'hide': True
-        }
-    ]
-    return res
-
-
+# Точка входа для запуска Flask-приложения
 if __name__ == '__main__':
-    app.run()
-
+    app.run(host='0.0.0.0', port=5000)
 
