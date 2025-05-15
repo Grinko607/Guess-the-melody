@@ -320,14 +320,21 @@ def choose_category_handler(res, event, session_id_db):
     res['response']['buttons'] = [
         {
             'title': category,
-            'payload': {'next_event':
-                [{
-                    'chapter': 'game',
-                    'event': 'choose_difficulty',
-                    'category': category}]},
+            'payload': {
+                'next_event': [
+                    {
+                        'chapter': 'game',
+                        'event': 'choose_difficulty',
+                        'category': category  # Добавляем категорию в payload
+                    }
+                ]
+            },
             'hide': True
         } for category in CATEGORIES
     ]
+
+    # Сохраняем выбранную категорию
+    sessionStorage[session_id_db]['chosen_category'] = event['request']['payload']['next_event'][0]['category']
     return res
 
 
@@ -364,8 +371,8 @@ def start_game_handler(res):
 
 
 def choose_difficulty_handler(res, event, session_id_db):
+    # Получаем категорию из payload
     chosen_category = event['request']['payload']['next_event'][0]['category']
-
     res['response']['text'] = "Выбери уровень сложности."
     res['response']['tts'] = "Выбери уровень сложности."
     res['response']['buttons'] = [
@@ -375,7 +382,9 @@ def choose_difficulty_handler(res, event, session_id_db):
                 'next_event': [
                     {
                         'chapter': 'game',
-                        'event': 'start_game_with_difficulty'
+                        'event': 'start_game_with_difficulty',
+                        'category': chosen_category,  # Добавляем категорию в payload
+                        'difficulty': difficulty
                     }
                 ]
             },
@@ -393,7 +402,7 @@ def random_song_handler(res, session_id_db):
 
 def start_game_with_difficulty_handler(res, event, session_id_db):
     chosen_difficulty = event['request']['payload']['next_event'][0]['difficulty']
-    chosen_category = sessionStorage[session_id_db]['chosen_category']
+    chosen_category = event['request']['payload']['next_event'][0]['category']
     return play_song(res, chosen_category, chosen_difficulty, session_id_db)
 
 
@@ -585,8 +594,8 @@ def leave_feedback_handler(res, event, session_id_db):
     else:
         res['response']['text'] = "Пожалуйста, напишите Ваш отзыв."
         res['response']['tts'] = "Пожалуйста, напишите Ваш отзыв."
-        res['response']['end_session'] = False
         game_state = 'waiting_for_feedback'
+        res['response']['end_session'] = False
     return res
 
 
