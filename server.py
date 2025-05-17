@@ -214,10 +214,15 @@ def get_or_create_session(session_id):
 
 
 game_state = None
+category_state = None
+difficulti_state = None
+selected_category = None
+selected_difficulty = None
 
 
 @app.route('/post', methods=['POST'])
 def dialog_handler():
+    global game_state, selected_category, selected_difficulty, category_state, difficulti_state
     event = request.json
     res = {
         'session': event['session'],
@@ -235,21 +240,29 @@ def dialog_handler():
         return jsonify(button_handler(res, event, session_id_db))
     elif game_state == 'waiting_for_feedback':
         return jsonify(leave_feedback_handler(res, event, session_id_db))
+    elif category_state == 'w':
+        return jsonify(choose_difficulty_handler(res, event, session_id_db))
+    elif difficulti_state == 'd':
+        return jsonify(handle_difficulty_selection(res, event))
     else:
         return jsonify(answer_handler(res, event, session_id_db))
 
 
 def button_handler(res, event, session_id_db):
-    global game_state
+    global game_state, selected_category, selected_difficulty, category_state, difficulti_state
     if game_state == 'waiting_for_feedback':
-        game_state == None
+        game_state = None
         return leave_feedback_handler(res, event, session_id_db)
+    elif category_state == 'w':
+        return choose_difficulty_handler(res, event, session_id_db)
+    elif difficulti_state == 'd':
+        return handle_difficulty_selection(res, event, session_id_db)
     elif event['request']['payload']['next_event'][0]['event'] == 'start_game':
         return start_game_handler(res)
     elif event['request']['payload']['next_event'][0]['event'] == 'choose_category':
         return choose_category_handler(res, event, session_id_db)
     elif event['request']['payload']['next_event'][0]['event'] == 'choose_difficulty':
-        return choose_difficulty_handler(res, event, session_id_db)
+        return handle_category_selection(res, event, session_id_db)
     elif event['request']['payload']['next_event'][0]['event'] == 'end_game':
         return end_game_handler(res, session_id_db)
     elif event['request']['payload']['next_event'][0]['event'] == 'leave_feedback':
@@ -315,26 +328,33 @@ def start_handler(res):
 
 
 def choose_category_handler(res, event, session_id_db):
+    global selected_category
     res['response']['text'] = "Выбери категорию."
     res['response']['tts'] = "Выбери категорию."
     res['response']['buttons'] = [
         {
             'title': category,
-            'payload': {
-                'next_event': [
-                    {
-                        'chapter': 'game',
-                        'event': 'choose_difficulty',
-                        'category': category  # Добавляем категорию в payload
-                    }
-                ]
-            },
+            'payload': {'next_event':
+                [{
+                    'chapter': 'game',
+                    'event': 'choose_difficulty',
+                    'category': category
+                }]},
             'hide': True
         } for category in CATEGORIES
     ]
+    return res
 
-    # Сохраняем выбранную категорию
-    sessionStorage[session_id_db]['chosen_category'] = event['request']['payload']['next_event'][0]['category']
+
+def handle_category_selection(res, event, session_id_db):
+    global selected_category, category_state
+    next_event = event.get('request', {}).get('payload', {}).get('next_event', [])
+    if next_event and 'category' in next_event[0]:
+        selected_category = next_event[0]['category']
+    else:
+        selected_category = None
+    category_state = "w"
+    button_handler(res, event, session_id_db)
     return res
 
 
@@ -371,8 +391,8 @@ def start_game_handler(res):
 
 
 def choose_difficulty_handler(res, event, session_id_db):
-    # Получаем категорию из payload
-    chosen_category = event['request']['payload']['next_event'][0]['category']
+    global selected_category, selected_difficulty, category_state, difficulti_state
+    category_state = None
     res['response']['text'] = "Выбери уровень сложности."
     res['response']['tts'] = "Выбери уровень сложности."
     res['response']['buttons'] = [
@@ -383,7 +403,7 @@ def choose_difficulty_handler(res, event, session_id_db):
                     {
                         'chapter': 'game',
                         'event': 'start_game_with_difficulty',
-                        'category': chosen_category,  # Добавляем категорию в payload
+                        'category': selected_category,
                         'difficulty': difficulty
                     }
                 ]
@@ -391,7 +411,20 @@ def choose_difficulty_handler(res, event, session_id_db):
             'hide': True
         } for difficulty in DIFFICULTIES
     ]
+    category_state = None
+    difficulti_state = 'd'
     return res
+
+
+def handle_difficulty_selection(res, event, session_id_db):
+    global selected_category, selected_difficulty, difficulti_state
+    next_event = event.get('request', {}).get('payload', {}).get('next_event', [])
+    if next_event and 'difficulty' in next_event[0]:
+        selected_difficulty = next_event[0]['difficulty']
+    else:
+        selected_difficulty = None
+    difficulti_state = None
+    return start_game_with_difficulty_handler(res, event, session_id_db)
 
 
 def random_song_handler(res, session_id_db):
@@ -407,9 +440,11 @@ def start_game_with_difficulty_handler(res, event, session_id_db):
 
 
 def play_song(res, chosen_category, chosen_difficulty, session_id_db):
-    melodies = audio_files[chosen_category][chosen_difficulty]
-    random_audio = random.choice(list(melodies.items()))
-
+    global selected_category, selected_difficulty
+    selected_category = chosen_category
+    selected_difficulty = chosen_difficulty
+    songs = audio_files[selected_category][selected_difficulty]
+    random_audio = random.choice(list(songs.items()))
     sessionStorage[session_id_db] = {
         'current_audio': random_audio[0],
         'correct_answer': random_audio[1],
@@ -425,6 +460,7 @@ def play_song(res, chosen_category, chosen_difficulty, session_id_db):
 
 
 def answer_handler(res, event, session_id_db):
+    global selected_category, selected_difficulty
     if session_id_db not in sessionStorage:
         res['response']['text'] = 'Ошибка'
         return res
@@ -434,11 +470,11 @@ def answer_handler(res, event, session_id_db):
 
     if user_answer.lower() == current_data['correct_answer'].lower():
         score_increment = 0
-        if current_data['difficulty'] == 'Лёгкий':
+        if selected_difficulty == 'Лёгкий':
             score_increment = 1
-        elif current_data['difficulty'] == 'Средний':
+        elif selected_difficulty == 'Средний':
             score_increment = 2
-        elif current_data['difficulty'] == 'Сложный':
+        elif selected_difficulty == 'Сложный':
             score_increment = 3
         update_user_score(session_id_db, score_increment)
 
@@ -470,6 +506,8 @@ def answer_handler(res, event, session_id_db):
                 'hide': True
             }
         ]
+        selected_category = None
+        selected_difficulty = None
         return res
     else:
         current_data['attempts'] += 1
@@ -594,8 +632,8 @@ def leave_feedback_handler(res, event, session_id_db):
     else:
         res['response']['text'] = "Пожалуйста, напишите Ваш отзыв."
         res['response']['tts'] = "Пожалуйста, напишите Ваш отзыв."
-        game_state = 'waiting_for_feedback'
         res['response']['end_session'] = False
+        game_state = 'waiting_for_feedback'
     return res
 
 
